@@ -33,8 +33,18 @@ class L1Loss(nn.Module):
         self.loss_labels = ['L1', 'EPE']
 
     def forward(self, output, target):
-        lossvalue = self.loss(output, target)
-        epevalue = EPE(output, target)
+        if isinstance(output, tuple):
+            lossvalue = 0
+            epevalue = 0
+            for i, output_ in enumerate(output):
+                target_ = nn.functional.interpolate(target, size=output_.shape[2:], mode='bilinear', align_corners=False)
+                lossvalue += self.loss(output_, target_)
+                epevalue += EPE(output_, target_)
+            lossvalue /= len(output)
+            epevalue /= len(output)
+        else:
+            lossvalue = self.loss(output, target)
+            epevalue = EPE(output, target)
         return [lossvalue, epevalue]
 
 class L2Loss(nn.Module):
@@ -45,8 +55,18 @@ class L2Loss(nn.Module):
         self.loss_labels = ['L2', 'EPE']
 
     def forward(self, output, target):
-        lossvalue = self.loss(output, target)
-        epevalue = EPE(output, target)
+        if isinstance(output, tuple):
+            lossvalue = 0
+            epevalue = 0
+            for i, output_ in enumerate(output):
+                target_ = nn.functional.interpolate(target, size=output_.shape[2:], mode='bilinear', align_corners=False)
+                lossvalue += self.loss(output_, target_)
+                epevalue += EPE(output_, target_)
+            lossvalue /= len(output)
+            epevalue /= len(output)
+        else:
+            lossvalue = self.loss(output, target)
+            epevalue = EPE(output, target)
         return [lossvalue, epevalue]
 
 class MultiScale(nn.Module):

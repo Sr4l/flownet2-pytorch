@@ -1,5 +1,5 @@
+#include <torch/extension.h>
 #include <ATen/ATen.h>
-#include <torch/torch.h>
 
 #include "resample2d_kernel.cuh"
 

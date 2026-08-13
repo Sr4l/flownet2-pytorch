@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.autograd import Variable
+
 from tensorboardX import SummaryWriter
 
 import argparse, os, sys, subprocess
@@ -207,11 +207,12 @@ if __name__ == '__main__':
         # Load weights if needed, otherwise randomly initialize
         if args.resume and os.path.isfile(args.resume):
             block.log("Loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, map_location='cpu')
             if not args.inference:
                 args.start_epoch = checkpoint['epoch']
             best_err = checkpoint['best_EPE']
-            model_and_loss.module.model.load_state_dict(checkpoint['state_dict'])
+            model_inner = model_and_loss.module if hasattr(model_and_loss, 'module') else model_and_loss
+            model_inner.model.load_state_dict(checkpoint['state_dict'])
             block.log("Loaded checkpoint '{}' (at epoch {})".format(args.resume, checkpoint['epoch']))
 
         elif args.resume and args.inference:
@@ -261,26 +262,25 @@ if __name__ == '__main__':
         last_log_time = progress._time()
         for batch_idx, (data, target) in enumerate(progress):
 
-            data, target = [Variable(d) for d in data], [Variable(t) for t in target]
             if args.cuda and args.number_gpus == 1:
                 data, target = [d.cuda(non_blocking=True) for d in data], [t.cuda(non_blocking=True) for t in target]
 
             optimizer.zero_grad() if not is_validate else None
             losses = model(data[0], target[0])
-            losses = [torch.mean(loss_value) for loss_value in losses] 
+            losses = [torch.mean(loss_value) for loss_value in losses]
             loss_val = losses[0] # Collect first loss for weight update
             total_loss += loss_val.item()
             loss_values = [v.item() for v in losses]
 
-            # gather loss_labels, direct return leads to recursion limit error as it looks for variables to gather'
-            loss_labels = list(model.module.loss.loss_labels)
+            model_inner = model.module if hasattr(model, 'module') else model
+            loss_labels = list(model_inner.loss.loss_labels)
 
             assert not np.isnan(total_loss)
 
             if not is_validate and args.fp16:
                 loss_val.backward()
                 if args.gradient_clip:
-                    torch.nn.utils.clip_grad_norm(model.parameters(), args.gradient_clip)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.gradient_clip)
 
                 params = list(model.parameters())
                 for i in range(len(params)):
@@ -293,7 +293,7 @@ if __name__ == '__main__':
             elif not is_validate:
                 loss_val.backward()
                 if args.gradient_clip:
-                    torch.nn.utils.clip_grad_norm(model.parameters(), args.gradient_clip)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.gradient_clip)
                 optimizer.step()
 
             # Update hyperparameters if needed
@@ -365,21 +365,20 @@ if __name__ == '__main__':
         for batch_idx, (data, target) in enumerate(progress):
             if args.cuda:
                 data, target = [d.cuda(non_blocking=True) for d in data], [t.cuda(non_blocking=True) for t in target]
-            data, target = [Variable(d) for d in data], [Variable(t) for t in target]
 
-            # when ground-truth flows are not available for inference_dataset, 
-            # the targets are set to all zeros. thus, losses are actually L1 or L2 norms of compute optical flows, 
+            # when ground-truth flows are not available for inference_dataset,
+            # the targets are set to all zeros. thus, losses are actually L1 or L2 norms of compute optical flows,
             # depending on the type of loss norm passed in
             with torch.no_grad():
                 losses, output = model(data[0], target[0], inference=True)
 
-            losses = [torch.mean(loss_value) for loss_value in losses] 
+            losses = [torch.mean(loss_value) for loss_value in losses]
             loss_val = losses[0] # Collect first loss for weight update
             total_loss += loss_val.item()
             loss_values = [v.item() for v in losses]
 
-            # gather loss_labels, direct return leads to recursion limit error as it looks for variables to gather'
-            loss_labels = list(model.module.loss.loss_labels)
+            model_inner = model.module if hasattr(model, 'module') else model
+            loss_labels = list(model_inner.loss.loss_labels)
 
             statistics.append(loss_values)
             # import IPython; IPython.embed()
@@ -426,11 +425,12 @@ if __name__ == '__main__':
                 is_best = True
 
             checkpoint_progress = tqdm(ncols=100, desc='Saving Checkpoint', position=offset)
+            model_inner = model_and_loss.module if hasattr(model_and_loss, 'module') else model_and_loss
             tools.save_checkpoint({   'arch' : args.model,
-                                      'epoch': epoch,
-                                      'state_dict': model_and_loss.module.model.state_dict(),
-                                      'best_EPE': best_err}, 
-                                      is_best, args.save, args.model)
+                                       'epoch': epoch,
+                                       'state_dict': model_inner.model.state_dict(),
+                                       'best_EPE': best_err}, 
+                                       is_best, args.save, args.model)
             checkpoint_progress.update(1)
             checkpoint_progress.close()
             offset += 1
@@ -443,11 +443,12 @@ if __name__ == '__main__':
             # save checkpoint after every validation_frequency number of epochs
             if ((epoch - 1) % args.validation_frequency) == 0:
                 checkpoint_progress = tqdm(ncols=100, desc='Saving Checkpoint', position=offset)
+                model_inner = model_and_loss.module if hasattr(model_and_loss, 'module') else model_and_loss
                 tools.save_checkpoint({   'arch' : args.model,
-                                          'epoch': epoch,
-                                          'state_dict': model_and_loss.module.model.state_dict(),
-                                          'best_EPE': train_loss}, 
-                                          False, args.save, args.model, filename = 'train-checkpoint.pth.tar')
+                                           'epoch': epoch,
+                                           'state_dict': model_inner.model.state_dict(),
+                                           'best_EPE': train_loss}, 
+                                           False, args.save, args.model, filename = 'train-checkpoint.pth.tar')
                 checkpoint_progress.update(1)
                 checkpoint_progress.close()
 

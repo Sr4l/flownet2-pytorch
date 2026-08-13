@@ -121,9 +121,8 @@ class FlowNet2(nn.Module):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         
         x = (inputs - rgb_mean) / self.rgb_max
-        x1 = x[:,:,0,:,:]
-        x2 = x[:,:,1,:,:]
-        x = torch.cat((x1,x2), dim = 1)
+        b, _, _, _, _ = x.size()
+        x = torch.cat((x[:, 0, :, :, :], x[:, 1, :, :, :]), dim=1)
 
         # flownetc
         flownetc_flow2 = self.flownetc(x)[0]
@@ -193,8 +192,8 @@ class FlowNet2C(FlowNetC.FlowNetC):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         
         x = (inputs - rgb_mean) / self.rgb_max
-        x1 = x[:,:,0,:,:]
-        x2 = x[:,:,1,:,:]
+        x1 = x[:,0,:,:,:]
+        x2 = x[:,1,:,:,:]
 
         # FlownetC top input stream
         out_conv1a = self.conv1(x1)
@@ -261,7 +260,8 @@ class FlowNet2S(FlowNetS.FlowNetS):
     def forward(self, inputs):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         x = (inputs - rgb_mean) / self.rgb_max
-        x = torch.cat( (x[:,:,0,:,:], x[:,:,1,:,:]), dim = 1)
+        b, _, _, _, _ = x.size()
+        x = torch.cat( (x[:, 0, :, :, :], x[:, 1, :, :, :]), dim = 1)
 
         out_conv1 = self.conv1(x)
 
@@ -307,7 +307,8 @@ class FlowNet2SD(FlowNetSD.FlowNetSD):
     def forward(self, inputs):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         x = (inputs - rgb_mean) / self.rgb_max
-        x = torch.cat( (x[:,:,0,:,:], x[:,:,1,:,:]), dim = 1)
+        b, _, _, _, _ = x.size()
+        x = torch.cat( (x[:, 0, :, :, :], x[:, 1, :, :, :]), dim = 1)
 
         out_conv0 = self.conv0(x)
         out_conv1 = self.conv1_1(self.conv1(out_conv0))
@@ -380,38 +381,37 @@ class FlowNet2CS(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 if m.bias is not None:
-                    init.uniform(m.bias)
-                init.xavier_uniform(m.weight)
+                    init.uniform_(m.bias)
+                init.xavier_uniform_(m.weight)
 
             if isinstance(m, nn.ConvTranspose2d):
                 if m.bias is not None:
-                    init.uniform(m.bias)
-                init.xavier_uniform(m.weight)
+                    init.uniform_(m.bias)
+                init.xavier_uniform_(m.weight)
                 # init_deconv_bilinear(m.weight)
 
     def forward(self, inputs):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
-        
+
         x = (inputs - rgb_mean) / self.rgb_max
-        x1 = x[:,:,0,:,:]
-        x2 = x[:,:,1,:,:]
-        x = torch.cat((x1,x2), dim = 1)
+        b, _, _, _, _ = x.size()
+        x = torch.cat((x[:, 0, :, :, :], x[:, 1, :, :, :]), dim=1)
 
         # flownetc
         flownetc_flow2 = self.flownetc(x)[0]
         flownetc_flow = self.upsample1(flownetc_flow2*self.div_flow)
-        
-        # warp img1 to img0; magnitude of diff between img0 and and warped_img1, 
+
+        # warp img1 to img0; magnitude of diff between img0 and and warped_img1,
         resampled_img1 = self.resample1(x[:,3:,:,:], flownetc_flow)
-        diff_img0 = x[:,:3,:,:] - resampled_img1 
+        diff_img0 = x[:,:3,:,:] - resampled_img1
         norm_diff_img0 = self.channelnorm(diff_img0)
 
-        # concat img0, img1, img1->img0, flow, diff-mag ; 
+        # concat img0, img1, img1->img0, flow, diff-mag ;
         concat1 = torch.cat((x, resampled_img1, flownetc_flow/self.div_flow, norm_diff_img0), dim=1)
-        
+
         # flownets1
         flownets1_flow2 = self.flownets_1(concat1)[0]
-        flownets1_flow = self.upsample2(flownets1_flow2*self.div_flow) 
+        flownets1_flow = self.upsample2(flownets1_flow2*self.div_flow)
 
         return flownets1_flow
 
@@ -457,22 +457,21 @@ class FlowNet2CSS(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 if m.bias is not None:
-                    init.uniform(m.bias)
-                init.xavier_uniform(m.weight)
+                    init.uniform_(m.bias)
+                init.xavier_uniform_(m.weight)
 
             if isinstance(m, nn.ConvTranspose2d):
                 if m.bias is not None:
-                    init.uniform(m.bias)
-                init.xavier_uniform(m.weight)
+                    init.uniform_(m.bias)
+                init.xavier_uniform_(m.weight)
                 # init_deconv_bilinear(m.weight)
 
     def forward(self, inputs):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         
         x = (inputs - rgb_mean) / self.rgb_max
-        x1 = x[:,:,0,:,:]
-        x2 = x[:,:,1,:,:]
-        x = torch.cat((x1,x2), dim = 1)
+        b, _, _, _, _ = x.size()
+        x = torch.cat((x[:, 0, :, :, :], x[:, 1, :, :, :]), dim=1)
 
         # flownetc
         flownetc_flow2 = self.flownetc(x)[0]

@@ -1,6 +1,5 @@
-#include <torch/torch.h>
+#include <torch/extension.h>
 #include <ATen/ATen.h>
-#include <ATen/Context.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <stdio.h>
 #include <iostream>
