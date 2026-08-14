@@ -125,7 +125,16 @@ def train(args, data_dir):
     args.loss_class = tools.module_to_dict(losses)[args.loss]
     args.optimizer_class = tools.module_to_dict(__import__("torch.optim", fromlist=["Adam"]))[args.optimizer]
 
+    if args.fp16:
+        raise ValueError("--fp16 training is not supported by this script; use main.py instead")
+
     assert exists(data_dir), f"Data dir {data_dir} missing"
+
+    cuda = torch.cuda.is_available() and args.number_gpus > 0
+    # mirror main.py: parallel DataLoader args only when CUDA is used
+    gpuargs = {'num_workers': args.number_workers * args.number_gpus,
+               'pin_memory': True,
+               'drop_last': True} if cuda else {}
 
     train_ds = datasets_module.FlyingChairs(
         args, True, root=data_dir,
@@ -133,7 +142,7 @@ def train(args, data_dir):
            if k.startswith("training_dataset_")}
     )
     train_dl = DataLoader(train_ds, batch_size=args.effective_batch_size,
-                          shuffle=True, num_workers=args.number_workers, pin_memory=True)
+                          shuffle=True, **gpuargs)
     print(f"  Train samples: {len(train_ds)}")
 
     val_ds = datasets_module.FlyingChairs(
@@ -141,20 +150,24 @@ def train(args, data_dir):
         **{k[len("validation_dataset_"):]: v for k, v in vars(args).items()
            if k.startswith("validation_dataset_")}
     )
-    val_dl = DataLoader(val_ds, batch_size=args.effective_batch_size, shuffle=False,
-                        num_workers=args.number_workers, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size=args.effective_batch_size, shuffle=False, **gpuargs)
 
     model = args.model_class(args)
-    cuda = torch.cuda.is_available()
     if cuda:
         model = model.cuda()
+        # mirror main.py: DataParallel whenever CUDA GPUs are used (even a single one)
+        model = torch.nn.DataParallel(model, device_ids=list(range(args.number_gpus)))
+        torch.cuda.manual_seed(args.seed)
+    else:
+        torch.manual_seed(args.seed)
+    model_inner = model.module if hasattr(model, "module") else model
 
-    start_epoch, best_EPE = 0, 1e4
+    start_epoch, best_EPE = 0, 1e8
     if args.resume and exists(args.resume):
         ckpt = torch.load(args.resume, map_location="cpu")
         start_epoch = ckpt["epoch"]
         best_EPE = ckpt["best_EPE"]
-        (model.module if hasattr(model, "module") else model).load_state_dict(ckpt["state_dict"])
+        model_inner.load_state_dict(ckpt["state_dict"])
         print(f"  Resumed epoch {start_epoch}, best EPE {best_EPE:.4f}")
 
     opt_kwargs = {k[len("optimizer_"):]: v for k, v in vars(args).items()
@@ -179,20 +192,20 @@ def train(args, data_dir):
     def evaluate():
         was = model.training
         model.eval()
-        s = 0.0
+        s, nb = 0.0, 0
         with torch.no_grad():
             for b in tqdm(val_dl, desc="Eval"):
                 d, t = b
-                d0 = d[0].permute(0, 2, 1, 3, 4).contiguous()
+                d0 = d[0]  # dataset already gives [B, 3, 2, H, W] as the model expects
                 t0 = t[0]
                 if cuda:
                     d0 = d0.cuda()
                     t0 = t0.cuda()
-                out = model(d0)
-                lv = loss_fn(out, t0)
-                s += sum(x.item() for x in lv)
+                lv = loss_fn(model(d0), t0)
+                s += lv[0].item()  # primary loss only, same metric as main.py's validation_loss
+                nb += 1
         model.train(was)
-        return s / max(len(val_dl), 1)
+        return s / max(nb, 1)
 
     for epoch in range(start_epoch, args.total_epochs):
         model.train()
@@ -200,61 +213,60 @@ def train(args, data_dir):
 
         for b in tqdm(train_dl, desc=f"Ep {epoch}"):
             d, t = b
-            # Dataset gives images as [B, 3, 2, H, W] (channels stacked in dim 1)
-            # Model expects [B, 2, 3, H, W] (frames stacked in dim 1)
-            d0 = d[0].permute(0, 2, 1, 3, 4).contiguous()
-            t0 = t[0]  # flow is [B, 2, H, W] no permute needed
+            # Dataset gives images as [B, 3, 2, H, W] (channels in dim 1) — what the model expects
+            d0 = d[0]
+            t0 = t[0]  # flow is [B, 2, H, W]
             if cuda:
                 d0 = d0.cuda()
                 t0 = t0.cuda()
             optimizer.zero_grad()
-            model_out = model(d0)  # list of flow tensors at different scales
+            model_out = model(d0)  # flow tensor(s), possibly multi-scale
             loss_values = loss_fn(model_out, t0)  # [loss, epe]
             loss_values = [torch.mean(lv) for lv in loss_values]
-            loss = sum(loss_values)
-            loss_vals = loss_values  # keep for logging
-            loss.backward()
+            loss_val = loss_values[0]  # first loss drives the weight update (as in main.py)
+            loss_vals = [lv.item() for lv in loss_values]  # keep for logging
+            loss_val.backward()
             if args.gradient_clip:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.gradient_clip)
             optimizer.step()
 
+            # LR schedule, per iteration (as in main.py); self-guards on schedule_lr_frequency > 0
+            tools.update_hyperparameter_schedule(args, epoch, iteration, optimizer)
+
             iteration += 1
-            bl = sum(x.item() for x in loss_vals)
+            bl = sum(loss_vals)
             ls_total += bl
             ls_buf += bl
             n += 1
 
             if iteration % 10 == 0:
                 for j, lv in enumerate(loss_vals):
-                    tlog.add_scalar(f"loss_{j}", lv.item(), iteration)
+                    tlog.add_scalar(f"loss_{j}", lv, iteration)
                 tlog.add_scalar("sum", ls_buf / 10, iteration)
                 tlog.add_scalar("lr", optimizer.param_groups[0]["lr"], iteration)
                 ls_buf = 0.0
-
-        if args.schedule_lr_frequency > 0:
-            tools.update_hyperparameter_schedule(
-                args.schedule_lr_frequency, iteration, "learning_rate",
-                "optimizer", optimizer.param_groups, 0, args.schedule_lr_fraction)
 
         print(f"  [{epoch}] loss={ls_total / max(n, 1):.4f}")
 
         if (epoch + 1) % args.validation_frequency == 0:
             vl = evaluate()
-            vlog.add_scalar("EPE", vl, epoch + 1)
-            best_EPE = min(vl, best_EPE)
+            vlog.add_scalar("val_loss", vl, epoch + 1)
+            # compare BEFORE updating best (as in main.py), otherwise is_best is never True
+            is_best = vl < best_EPE
+            if is_best:
+                best_EPE = vl
             tools.save_checkpoint(
-                {"arch": args.model, "epoch": epoch + 1, "state_dict": model.state_dict(),
+                {"arch": args.model, "epoch": epoch + 1, "state_dict": model_inner.state_dict(),
                  "best_EPE": best_EPE},
-                vl < best_EPE or epoch == start_epoch,
-                args.save, args.model)
-            print(f"  EPE={vl:.4f}  best={best_EPE:.4f}")
+                is_best, args.save, args.model)
+            print(f"  val_loss={vl:.4f}  best={best_EPE:.4f}")
 
 
 # ─── main ──────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--num_pairs", type=int, default=100, help="Pairs to download (~2.7 MB each)")
+    p.add_argument("--num_pairs", type=int, default=200, help="Pairs to download (~2.7 MB each)")
     p.add_argument("--data_dir", type=str, default="./work/chairs_data", help="Data output dir")
     p.add_argument("--only_download", action="store_true")
     p.add_argument("--train_only", action="store_true")
@@ -269,10 +281,12 @@ def main():
     g.add_argument("--save", type=str, default="./work")
     g.add_argument("--resume", type=str, default=None)
     g.add_argument("--validation_frequency", type=int, default=10)
-    g.add_argument("--schedule_lr_frequency", type=int, default=0)
-    g.add_argument("--schedule_lr_fraction", type=float, default=0.1)
+    g.add_argument("--schedule_lr_frequency", type=int, default=0,
+                   help="in number of iterations (0 for no schedule)")
+    g.add_argument("--schedule_lr_fraction", type=float, default=10)
     g.add_argument("--fp16", action="store_true")
     g.add_argument("--gradient_clip", type=float, default=None)
+    g.add_argument("--seed", type=int, default=1)
 
     mg = p.add_argument_group("model")
     mg.add_argument("--model", type=str, default="FlowNet2",

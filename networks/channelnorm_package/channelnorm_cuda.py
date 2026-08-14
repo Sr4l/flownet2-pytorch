@@ -21,8 +21,8 @@ class ChannelNormFunction(torch.autograd.Function):
         norm_expanded = norm.view(b, 1, h, w).expand_as(input1_c)
         eps = 1e-9
         safe_norm = torch.clamp(norm_expanded, min=eps)
-        normalized = input1_c / safe_norm
-        grad_input1 = grad_output * normalized / safe_norm
+        # d||x||_2/dx_c = x_c / ||x||  (matches the CUDA kernel: grad_out * x / (norm + eps))
+        grad_input1 = grad_output * input1_c / safe_norm
         return grad_input1, None
 
 

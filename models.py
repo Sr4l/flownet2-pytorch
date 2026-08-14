@@ -121,8 +121,9 @@ class FlowNet2(nn.Module):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         
         x = (inputs - rgb_mean) / self.rgb_max
-        b, _, _, _, _ = x.size()
-        x = torch.cat((x[:, 0, :, :, :], x[:, 1, :, :, :]), dim=1)
+        x1 = x[:,:,0,:,:]
+        x2 = x[:,:,1,:,:]
+        x = torch.cat((x1,x2), dim = 1)
 
         # flownetc
         flownetc_flow2 = self.flownetc(x)[0]
@@ -192,8 +193,8 @@ class FlowNet2C(FlowNetC.FlowNetC):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         
         x = (inputs - rgb_mean) / self.rgb_max
-        x1 = x[:,0,:,:,:]
-        x2 = x[:,1,:,:,:]
+        x1 = x[:,:,0,:,:]
+        x2 = x[:,:,1,:,:]
 
         # FlownetC top input stream
         out_conv1a = self.conv1(x1)
@@ -260,8 +261,7 @@ class FlowNet2S(FlowNetS.FlowNetS):
     def forward(self, inputs):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         x = (inputs - rgb_mean) / self.rgb_max
-        b, _, _, _, _ = x.size()
-        x = torch.cat( (x[:, 0, :, :, :], x[:, 1, :, :, :]), dim = 1)
+        x = torch.cat( (x[:,:,0,:,:], x[:,:,1,:,:]), dim = 1)
 
         out_conv1 = self.conv1(x)
 
@@ -307,8 +307,7 @@ class FlowNet2SD(FlowNetSD.FlowNetSD):
     def forward(self, inputs):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         x = (inputs - rgb_mean) / self.rgb_max
-        b, _, _, _, _ = x.size()
-        x = torch.cat( (x[:, 0, :, :, :], x[:, 1, :, :, :]), dim = 1)
+        x = torch.cat( (x[:,:,0,:,:], x[:,:,1,:,:]), dim = 1)
 
         out_conv0 = self.conv0(x)
         out_conv1 = self.conv1_1(self.conv1(out_conv0))
@@ -394,14 +393,15 @@ class FlowNet2CS(nn.Module):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
 
         x = (inputs - rgb_mean) / self.rgb_max
-        b, _, _, _, _ = x.size()
-        x = torch.cat((x[:, 0, :, :, :], x[:, 1, :, :, :]), dim=1)
+        x1 = x[:,:,0,:,:]
+        x2 = x[:,:,1,:,:]
+        x = torch.cat((x1,x2), dim = 1)
 
         # flownetc
         flownetc_flow2 = self.flownetc(x)[0]
         flownetc_flow = self.upsample1(flownetc_flow2*self.div_flow)
-
-        # warp img1 to img0; magnitude of diff between img0 and and warped_img1,
+        
+        # warp img1 to img0; magnitude of diff between img0 and and warped_img1, 
         resampled_img1 = self.resample1(x[:,3:,:,:], flownetc_flow)
         diff_img0 = x[:,:3,:,:] - resampled_img1
         norm_diff_img0 = self.channelnorm(diff_img0)
@@ -470,8 +470,9 @@ class FlowNet2CSS(nn.Module):
         rgb_mean = inputs.contiguous().view(inputs.size()[:2]+(-1,)).mean(dim=-1).view(inputs.size()[:2] + (1,1,1,))
         
         x = (inputs - rgb_mean) / self.rgb_max
-        b, _, _, _, _ = x.size()
-        x = torch.cat((x[:, 0, :, :, :], x[:, 1, :, :, :]), dim=1)
+        x1 = x[:,:,0,:,:]
+        x2 = x[:,:,1,:,:]
+        x = torch.cat((x1,x2), dim = 1)
 
         # flownetc
         flownetc_flow2 = self.flownetc(x)[0]

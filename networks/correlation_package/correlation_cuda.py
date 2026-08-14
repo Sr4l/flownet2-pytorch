@@ -2,8 +2,47 @@ import torch
 import torch.nn.functional as F
 
 
+def correlation(input1, input2, pad_size=3, kernel_size=3, max_displacement=20, stride1=1, stride2=2):
+    """Pure PyTorch reimplementation of the original CUDA correlation kernel.
+
+    Faithful to correlation_cuda_kernel.cu (forward): for every displacement
+    (dy, dx) in [-max_displacement, max_displacement] stepped by stride2,
+
+        out[b, tc, y, x] = sum_{c, kernel window} input1 * input2_shifted
+                           / (kernel_size**2 * C)
+
+    with channel tc = (dy/stride2 + rad) * nd + (dx/stride2 + rad)
+    (y-displacement is the outer/slow index, as in the CUDA kernel).
+    Only stride1 == 1 is supported (the only configuration the models use).
+    """
+    assert stride1 == 1, "pure PyTorch fallback only supports stride1 == 1"
+    b, c, h, w = input1.shape
+    kernel_rad = (kernel_size - 1) // 2
+    disp_rad = max_displacement // stride2
+    nd = 2 * disp_rad + 1
+    nelems = kernel_size * kernel_size * c
+
+    r1 = F.pad(input1, (pad_size, pad_size, pad_size, pad_size))
+    r2 = F.pad(input2, (pad_size, pad_size, pad_size, pad_size))
+
+    channels = []
+    for ty in range(-disp_rad, disp_rad + 1):
+        for tx in range(-disp_rad, disp_rad + 1):
+            acc = input1.new_zeros(b, h, w)
+            for j in range(-kernel_rad, kernel_rad + 1):
+                for i in range(-kernel_rad, kernel_rad + 1):
+                    a = r1[:, :, pad_size + j: pad_size + j + h,
+                             pad_size + i: pad_size + i + w]
+                    bb = r2[:, :, pad_size + ty * stride2 + j: pad_size + ty * stride2 + j + h,
+                              pad_size + tx * stride2 + i: pad_size + tx * stride2 + i + w]
+                    acc = acc + (a * bb).sum(dim=1)
+            channels.append(acc / nelems)
+
+    return torch.stack(channels, dim=1)  # (B, nd*nd, H, W)
+
+
 class Correlation(torch.nn.Module):
-    """Pure PyTorch correlation for FlowNet2."""
+    """Pure PyTorch correlation for FlowNet2 (drop-in replacement for the CUDA op)."""
     def __init__(self, pad_size=0, kernel_size=0, max_displacement=0, stride1=1, stride2=2, corr_multiply=1):
         super(Correlation, self).__init__()
         self.pad_size = pad_size
@@ -11,50 +50,28 @@ class Correlation(torch.nn.Module):
         self.max_displacement = max_displacement
         self.stride1 = stride1
         self.stride2 = stride2
+        # kept for API compatibility; the original CUDA forward kernel does not use it either
         self.corr_multiply = corr_multiply
 
     def forward(self, input1, input2):
-        b, c, h, w = input1.shape
-        d = self.max_displacement
-        s2 = self.stride2
-        k = self.kernel_size
-
-        # Pad inputs
-        in1 = F.pad(input1, (d, d, d, d))  # (B, C, H+2d, W+2d)
-        in2 = F.pad(input2, (d, d, d, d))
-
-        # Number of displacement offsets in each axis
-        nd = 2 * (d // s2) + 1
-
-        # Output: (B, C, h, w, nd, nd)
-        out = torch.zeros(b, c, h, w, nd, nd, device=input1.device, dtype=input1.dtype)
-
-        # For each offset, compute correlation
-        for i in range(nd):
-            di = i - d // s2
-            for j in range(nd):
-                dj = j - d // s2
-                # Shifted input2 at (di, dj)
-                si = d + di
-                sj = d + dj
-                in2_shifted = in2[:, :, si:si + h, sj:sj + w]
-                out[:, :, :, :, i, j] = in1[:, :, d:d + h, d:d + w] * in2_shifted
-
-        # Sum over channels and spatial kernel
-        out = out.sum(dim=1)  # (B, h, w, nd, nd)
-
-        return out.permute(0, 3, 4, 1, 2).reshape(b, nd * nd, h, w)
+        return correlation(input1, input2, self.pad_size, self.kernel_size,
+                           self.max_displacement, self.stride1, self.stride2)
 
 
 class CorrelationFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input1, input2, pad_size=3, kernel_size=3, max_displacement=20, stride1=1, stride2=2, corr_multiply=1):
-        return Correlation(
-            pad_size=pad_size, kernel_size=kernel_size,
-            max_displacement=max_displacement, stride1=stride1,
-            stride2=stride2, corr_multiply=corr_multiply
-        )(input1, input2)
+        ctx.save_for_backward(input1, input2)
+        ctx.params = (pad_size, kernel_size, max_displacement, stride1, stride2)
+        return correlation(input1, input2, pad_size, kernel_size, max_displacement, stride1, stride2)
 
     @staticmethod
     def backward(ctx, grad_output):
-        return None, None, None, None, None, None, None, None
+        input1, input2 = ctx.saved_tensors
+        pad_size, kernel_size, max_displacement, stride1, stride2 = ctx.params
+        with torch.enable_grad():
+            i1 = input1.detach().requires_grad_(True)
+            i2 = input2.detach().requires_grad_(True)
+            out = correlation(i1, i2, pad_size, kernel_size, max_displacement, stride1, stride2)
+            grad_input1, grad_input2 = torch.autograd.grad(out, (i1, i2), grad_output.contiguous())
+        return grad_input1, grad_input2, None, None, None, None, None, None
