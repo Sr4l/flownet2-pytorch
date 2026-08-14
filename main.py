@@ -108,7 +108,7 @@ if __name__ == '__main__':
         args.inference_dataset_class = tools.module_to_dict(datasets)[args.inference_dataset]
 
         args.cuda = not args.no_cuda and torch.cuda.is_available()
-        args.current_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).rstrip()
+        args.current_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().rstrip()
         args.log_file = join(args.save, 'args.txt')
 
         # dict to collect activation gradients (for training debug purpose)
@@ -137,6 +137,7 @@ if __name__ == '__main__':
         inf_gpuargs = gpuargs.copy()
         inf_gpuargs['num_workers'] = args.number_workers
 
+        train_loader = None
         if exists(args.training_dataset_root):
             train_dataset = args.training_dataset_class(args, True, **tools.kwargs_from_args(args, 'training_dataset'))
             block.log('Training Dataset: {}'.format(args.training_dataset))
@@ -144,6 +145,7 @@ if __name__ == '__main__':
             block.log('Training Targets: {}'.format(' '.join([str([d for d in x.size()]) for x in train_dataset[0][1]])))
             train_loader = DataLoader(train_dataset, batch_size=args.effective_batch_size, shuffle=True, **gpuargs)
 
+        validation_loader = None
         if exists(args.validation_dataset_root):
             validation_dataset = args.validation_dataset_class(args, True, **tools.kwargs_from_args(args, 'validation_dataset'))
             block.log('Validation Dataset: {}'.format(args.validation_dataset))
@@ -151,6 +153,7 @@ if __name__ == '__main__':
             block.log('Validation Targets: {}'.format(' '.join([str([d for d in x.size()]) for x in validation_dataset[0][1]])))
             validation_loader = DataLoader(validation_dataset, batch_size=args.effective_batch_size, shuffle=False, **gpuargs)
 
+        inference_loader = None
         if exists(args.inference_dataset_root):
             inference_dataset = args.inference_dataset_class(args, False, **tools.kwargs_from_args(args, 'inference_dataset'))
             block.log('Inference Dataset: {}'.format(args.inference_dataset))
@@ -411,11 +414,11 @@ if __name__ == '__main__':
     global_iteration = 0
 
     for epoch in progress:
-        if args.inference or (args.render_validation and ((epoch - 1) % args.validation_frequency) == 0):
+        if (args.inference or (args.render_validation and ((epoch - 1) % args.validation_frequency) == 0)) and inference_loader is not None:
             stats = inference(args=args, epoch=epoch - 1, data_loader=inference_loader, model=model_and_loss, offset=offset)
             offset += 1
 
-        if not args.skip_validation and ((epoch - 1) % args.validation_frequency) == 0:
+        if not args.skip_validation and validation_loader is not None and ((epoch - 1) % args.validation_frequency) == 0:
             validation_loss, _ = train(args=args, epoch=epoch - 1, start_iteration=global_iteration, data_loader=validation_loader, model=model_and_loss, optimizer=optimizer, logger=validation_logger, is_validate=True, offset=offset)
             offset += 1
 
@@ -427,15 +430,15 @@ if __name__ == '__main__':
             checkpoint_progress = tqdm(ncols=100, desc='Saving Checkpoint', position=offset)
             model_inner = model_and_loss.module if hasattr(model_and_loss, 'module') else model_and_loss
             tools.save_checkpoint({   'arch' : args.model,
-                                       'epoch': epoch,
-                                       'state_dict': model_inner.model.state_dict(),
-                                       'best_EPE': best_err}, 
-                                       is_best, args.save, args.model)
+                                        'epoch': epoch,
+                                        'state_dict': model_inner.model.state_dict(),
+                                        'best_EPE': best_err}, 
+                                        is_best, args.save, args.model)
             checkpoint_progress.update(1)
             checkpoint_progress.close()
             offset += 1
 
-        if not args.skip_training:
+        if not args.skip_training and train_loader is not None:
             train_loss, iterations = train(args=args, epoch=epoch, start_iteration=global_iteration, data_loader=train_loader, model=model_and_loss, optimizer=optimizer, logger=train_logger, offset=offset)
             global_iteration += iterations
             offset += 1

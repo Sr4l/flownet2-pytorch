@@ -6,3 +6,4 @@ work
 work/*
 _ext/
 build/
+__pycache__/
