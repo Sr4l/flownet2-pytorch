@@ -18,7 +18,6 @@ Usage:
 import argparse
 import os
 import sys
-import time
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.abspath("."))
@@ -27,6 +26,7 @@ import kagglesdk
 
 import inspect
 import torch
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 from utils import tools
@@ -63,7 +63,34 @@ def download_one(remote_path, local_path, client=None):
             f.write(chunk)
 
 
-def download_subset(data_dir, num_pairs):
+def _download_pair(i, raw_dir, link_dir):
+    """Download one pair (3 files) and create symlinks. Returns (pid, True) on success or (pid, False) on failure."""
+    pid = f"{i + 1:05d}"
+    lid = f"{i:07d}"
+    files = [
+        (f"FlyingChairs_release/data/{pid}_img1.ppm", lid + "-img0.ppm"),
+        (f"FlyingChairs_release/data/{pid}_img2.ppm", lid + "-img1.ppm"),
+        (f"FlyingChairs_release/data/{pid}_flow.flo", lid + "-flow.flo"),
+    ]
+    client = _api_client()
+    ok = True
+    for remote, link_name in files:
+        raw = os.path.join(raw_dir, os.path.basename(remote))
+        link = os.path.join(link_dir, link_name)
+        if not os.path.exists(raw):
+            try:
+                download_one(remote, raw, client)
+            except Exception as e:
+                print(f"\n  FAIL {pid} {link_name}: {e}")
+                ok = False
+                break
+        if ok and not os.path.exists(link):
+            rel_target = os.path.relpath(raw, link_dir)
+            os.symlink(rel_target, link)
+    return pid, ok
+
+
+def download_subset(data_dir, num_pairs, threads=16):
     """Download num_pairs image/flow triplets as raw files, then symlink."""
     raw_dir = os.path.join(data_dir, ".raw")
     link_dir = os.path.join(data_dir, "links")
@@ -76,36 +103,18 @@ def download_subset(data_dir, num_pairs):
         print(f"[download] {have} pairs already present.")
         return link_dir
 
-    print(f"[download] Fetching {left} pairs (~{left * 2.7:.0f} MB) ...")
+    print(f"[download] Fetching {left} pairs (~{left * 2.7:.0f} MB) with {threads} threads ...")
 
-    client = _api_client()
+    failed = False
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        futures = {pool.submit(_download_pair, i, raw_dir, link_dir): i for i in range(have, num_pairs)}
+        for _ in tqdm(as_completed(futures), total=len(futures), desc="Pairs"):
+            pid, ok = futures[_].result()
+            if not ok:
+                failed = True
 
-    for i in tqdm(range(have, num_pairs), desc="Pairs"):
-        pid = f"{i + 1:05d}"          # Kaggle id (1-indexed: 00001, 00002, ...)
-        lid = f"{i:07d}"              # symlink id (0-indexed, 7-digit)
-        files = [
-            (f"FlyingChairs_release/data/{pid}_img1.ppm", lid + "-img0.ppm"),
-            (f"FlyingChairs_release/data/{pid}_img2.ppm", lid + "-img1.ppm"),
-            (f"FlyingChairs_release/data/{pid}_flow.flo", lid + "-flow.flo"),
-        ]
-        ok = True
-        for remote, link_name in files:
-            raw = os.path.join(raw_dir, os.path.basename(remote))
-            link = os.path.join(link_dir, link_name)
-            if not os.path.exists(raw):
-                try:
-                    download_one(remote, raw, client)
-                except Exception as e:
-                    print(f"\n  FAIL {pid} {link_name}: {e}")
-                    ok = False
-                    break
-                time.sleep(0.3)  # rate-limit
-            if ok and not os.path.exists(link):
-                rel_target = os.path.relpath(raw, link_dir)
-                os.symlink(rel_target, link)
-        if not ok:
-            print("  (re-run to resume)")
-            break
+    if failed:
+        print("  (re-run to resume)")
 
     total = len([f for f in os.listdir(link_dir) if f.endswith("-flow.flo")])
     print(f"[download] {total}/{num_pairs} pairs ready in {link_dir}")
@@ -194,7 +203,7 @@ def train(args, data_dir):
         model.eval()
         s, nb = 0.0, 0
         with torch.no_grad():
-            for b in tqdm(val_dl, desc="Eval"):
+            for b in tqdm(val_dl, desc="Eval", miniters=50, mininterval=50):
                 d, t = b
                 d0 = d[0]  # dataset already gives [B, 3, 2, H, W] as the model expects
                 t0 = t[0]
@@ -211,7 +220,7 @@ def train(args, data_dir):
         model.train()
         ls_total, n, ls_buf = 0.0, 0, 0.0
 
-        for b in tqdm(train_dl, desc=f"Ep {epoch}"):
+        for b in tqdm(train_dl, desc=f"Ep {epoch}", miniters=50, mininterval=50):
             d, t = b
             # Dataset gives images as [B, 3, 2, H, W] (channels in dim 1) — what the model expects
             d0 = d[0]
@@ -266,8 +275,9 @@ def train(args, data_dir):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--num_pairs", type=int, default=200, help="Pairs to download (~2.7 MB each)")
+    p.add_argument("--num_pairs", type=int, default=1000, help="Pairs to download (~2.7 MB each)")
     p.add_argument("--data_dir", type=str, default="./work/chairs_data", help="Data output dir")
+    p.add_argument("--download_threads", type=int, default=4, help="Parallel download threads")
     p.add_argument("--only_download", action="store_true")
     p.add_argument("--train_only", action="store_true")
 
@@ -319,7 +329,7 @@ def main():
 
     if not args.train_only:
         print("=== Download ===")
-        data = download_subset(args.data_dir, args.num_pairs)
+        data = download_subset(args.data_dir, args.num_pairs, threads=args.download_threads)
         if args.only_download:
             return
     else:

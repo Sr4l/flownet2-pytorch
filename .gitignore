@@ -7,3 +7,5 @@ work/*
 _ext/
 build/
 __pycache__/
+/output*.out
+flownet2_pytorch.egg-info

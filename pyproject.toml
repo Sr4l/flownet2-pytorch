@@ -4,8 +4,8 @@ version = "1.0.0"
 description = "PyTorch implementation of FlowNet 2.0"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.3.0",
-    "torchvision>=0.18.0",
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
     "numpy>=1.21.0",
     "scipy>=1.7.0",
     "scikit-image>=0.19.0",
@@ -22,7 +22,21 @@ dependencies = [
     "imageio[ffmpeg]>=2.28.0",
     "pytz>=2022.0",
     "setuptools>=65.0.0",
+    "kagglesdk"
 ]
+
+#[[tool.uv.index]]
+#name = "pytorch-cu126"
+#url = "https://download.pytorch.org/whl/cu126"
+#explicit = true
+
+#[tool.uv.sources]
+#torch = [{ index = "pytorch-cu126" }]
+#torchvision = [{ index = "pytorch-cu126" }]
+
+[tool.setuptools.packages.find]
+include = ["networks*"]
+exclude = ["work*"]
 
 [build-system]
 requires = ["setuptools>=65.0.0"]
