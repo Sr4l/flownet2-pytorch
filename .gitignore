@@ -2,8 +2,7 @@
 .torch
 _ext
 *.o
-work
-work/*
+work*
 _ext/
 build/
 __pycache__/

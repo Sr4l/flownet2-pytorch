@@ -1,45 +1,45 @@
-import torch
-import numpy as np
-import argparse
+import os
+import sys
 
-from Networks.FlowNet2 import FlowNet2  # the path is depended on where you create this module
-from frame_utils import read_gen  # the path is depended on where you create this module
+import numpy as np
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+from models import FlowNet2
+from utils.frame_utils import read_gen
+
+
+def writeFlow(name, flow):
+    with open(name, 'wb') as f:
+        f.write(b'PIEH')
+        np.array([flow.shape[1], flow.shape[0]], dtype=np.int32).tofile(f)
+        flow.astype(np.float32).tofile(f)
+
 
 if __name__ == '__main__':
-    # obtain the necessary args for construct the flownet framework
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--fp16', action='store_true', help='Run model in pseudo-fp16 mode (fp16 storage fp32 math).')
-    parser.add_argument("--rgb_max", type=float, default=255.)
-    
-    args = parser.parse_args()
+    args = type('Args', (), {'rgb_max': 255., 'fp16': False})()
 
-    # initial a Net
-    net = FlowNet2(args).cuda()
-    # load the state_dict
-    dict = torch.load("/home/hjj/PycharmProjects/flownet2_pytorch/FlowNet2_checkpoint.pth.tar")
-    net.load_state_dict(dict["state_dict"])
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    net = FlowNet2(args).to(device)
+    net.eval()
 
-    # load the image pair, you can find this operation in dataset.py
-    pim1 = read_gen("/home/hjj/flownet2-master/data/FlyingChairs_examples/0000007-img0.ppm")
-    pim2 = read_gen("/home/hjj/flownet2-master/data/FlyingChairs_examples/0000007-img1.ppm")
-    images = [pim1, pim2]
-    images = np.array(images).transpose(3, 0, 1, 2)
-    im = torch.from_numpy(images.astype(np.float32)).unsqueeze(0).cuda()
+    checkpoint = torch.load('work/FlowNet2_checkpoint.pth.tar', map_location=device)
+    net.load_state_dict(checkpoint["state_dict"])
 
-    # process the image pair to obtian the flow
-    result = net(im).squeeze()
+    img1_path = 'work/chairs_data/links/0000000-img0.ppm'
+    img2_path = 'work/chairs_data/links/0000000-img1.ppm'
+    out_path = 'work/0000000-predicted.flo'
 
+    pim1 = read_gen(img1_path)
+    pim2 = read_gen(img2_path)
+    images = np.array([pim1, pim2]).transpose(3, 0, 1, 2)
+    im = torch.from_numpy(images.astype(np.float32)).unsqueeze(0).to(device)
 
-    # save flow, I reference the code in scripts/run-flownet.py in flownet2-caffe project
-    def writeFlow(name, flow):
-        f = open(name, 'wb')
-        f.write('PIEH'.encode('utf-8'))
-        np.array([flow.shape[1], flow.shape[0]], dtype=np.int32).tofile(f)
-        flow = flow.astype(np.float32)
-        flow.tofile(f)
-        f.flush()
-        f.close()
+    with torch.no_grad():
+        result = net(im).squeeze()
 
-
-    data = result.data.cpu().numpy().transpose(1, 2, 0)
-    writeFlow("/home/hjj/flownet2-master/data/FlyingChairs_examples/0000007-img.flo", data)
+    data = result.cpu().numpy().transpose(1, 2, 0)
+    writeFlow(out_path, data)
+    print(f'Flow written to {out_path}')

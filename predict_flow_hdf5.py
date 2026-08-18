@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -11,12 +12,8 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 from models import FlowNet2
 
 
-def main():
-    hdf5_path = '/daten/Work/kistner/inter_velo.h5'
-    dataset_path = '/m0/q007_0/diff_bg'
-    checkpoint_path = 'work_pretrained/FlowNet2_JR_CD_fintune_train-checkpoint_1500ep.pth.tar'
-
-    with h5py.File(hdf5_path, 'r') as f:
+def predict(input_hdf5, output_hdf5, dataset_path, checkpoint_path):
+    with h5py.File(input_hdf5, 'r') as f:
         frames = f[dataset_path][:]  # (N, H, W)
 
     N, orig_H, orig_W = frames.shape
@@ -79,11 +76,26 @@ def main():
     nan_fraction = pair_nan.sum() / pair_nan.size
     print(f'Output NaN fraction: {nan_fraction:.3%}')
 
-    out_path = '/daten/Work/kistner/inter_velo_flow.h5'
-    with h5py.File(out_path, 'w') as f:
+    with h5py.File(output_hdf5, 'w') as f:
         f.create_dataset('diff_bg_flow', data=flow_array, compression='gzip')
-    print(f'Flow saved to {out_path} — shape {flow_array.shape}, dtype {flow_array.dtype}')
+    print(f'Flow saved to {output_hdf5} — shape {flow_array.shape}, dtype {flow_array.dtype}')
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='Predict optical flow from HDF5 frame sequence')
+    parser.add_argument('--input_hdf5', type=str, default='/daten/Work/kistner/inter_velo.h5',
+                        help='Path to input HDF5 file')
+    parser.add_argument('--output_hdf5', type=str, default='/daten/Work/kistner/inter_velo_flow.h5',
+                        help='Path to output HDF5 file')
+    parser.add_argument('--dataset_path', type=str, default='/m0/q007_0/diff_bg',
+                        help='HDF5 dataset group inside the input file')
+    parser.add_argument('--checkpoint', type=str, default='work_pretrained/FlowNet2_JR_CD_fintune_train-checkpoint_1500ep.pth.tar',
+                        help='Path to model checkpoint')
+    args = parser.parse_args()
+
+    checkpoint_path = args.checkpoint
+    dataset_path = args.dataset_path
+    input_hdf5 = args.input_hdf5
+    output_hdf5 = args.output_hdf5
+
+    predict(input_hdf5, output_hdf5, dataset_path, checkpoint_path)
